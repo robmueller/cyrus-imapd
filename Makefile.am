@@ -1082,6 +1082,8 @@ imap_libcyrus_imap_la_SOURCES = \
 	imap/sequence.c \
 	imap/sequence.h \
 	imap/setproctitle.c \
+	imap/sieve_db.c \
+	imap/sieve_db.h \
 	imap/sievedir.c \
 	imap/sievedir.h \
 	imap/smtpclient.c \
