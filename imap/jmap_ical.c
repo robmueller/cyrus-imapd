@@ -3083,7 +3083,7 @@ calendarevent_from_ical(icalcomponent *comp,
         }
     }
 
-
+    // FIXME sentBy
 
     /* recurrenceRules */
     if (jmap_wantprop(props, "recurrenceRules") && !is_exception) {
