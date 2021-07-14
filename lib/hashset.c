@@ -52,13 +52,20 @@
 #include "xmalloc.h"
 #include "util.h"
 
-EXPORTED struct hashset *hashset_new(size_t bytesize)
+EXPORTED struct hashset *hashset_new(size_t bytesize, size_t allocatesize)
 {
     assert(bytesize > 2);
     assert(bytesize <= 128);
+    assert(allocatesize < (1<<31));
+    size_t tablesize = 1;
     struct hashset *hs = xzmalloc(sizeof(struct hashset));
     hs->recsize = bytesize + 4;
     hs->bytesize = bytesize;
+    while (tablesize < allocatesize)
+        tablesize <<= 1;
+    if (tablesize < 256) tablesize = 256;
+    hs->starts = xzmalloc(tablesize * sizeof(uint32_t));
+    hs->tablemask = tablesize - 1;
     return hs;
 }
 
@@ -66,7 +73,7 @@ EXPORTED struct hashset *hashset_new(size_t bytesize)
 EXPORTED int hashset_add(struct hashset *hs, const void *value)
 {
     assert(hs);
-    uint32_t *pos = &hs->starts[*((uint16_t *)value)];
+    uint32_t *pos = &hs->starts[*((uint32_t *)value) & hs->tablemask];
     uint32_t *base = pos;
     size_t offset = 0;
     while (*pos) {
@@ -109,7 +116,7 @@ EXPORTED int hashset_exists(struct hashset *hs, const void *data)
 {
     if (!hs) return 0;
 
-    uint32_t pos = hs->starts[*((uint16_t *)data)];
+    uint32_t pos = hs->starts[*((uint32_t *)value) & hs->tablemask];
     while (pos) {
         size_t offset = hs->recsize * (pos - 1);
         if (!memcmp(hs->data+offset, data, hs->bytesize))
@@ -122,6 +129,7 @@ EXPORTED int hashset_exists(struct hashset *hs, const void *data)
 
 EXPORTED void hashset_free(struct hashset **hsp)
 {
+    xfree((*hsp)->starts);
     xfree((*hsp)->data);
     xzfree(*hsp);
 }

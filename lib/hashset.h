@@ -5,7 +5,8 @@
 #include <stdint.h>           /* For uint32_t */
 
 struct hashset {
-    uint32_t starts[65536];
+    uint32_t *starts;
+    size_t tablemask;
     size_t bytesize;
     size_t recsize;
     size_t alloc;
@@ -13,7 +14,7 @@ struct hashset {
     void *data;
 };
 
-struct hashset *hashset_new(size_t bytesize);
+struct hashset *hashset_new(size_t bytesize, size_t allocatesize);
 
 // returns 1 if added, 0 if not added (already there)
 int hashset_add(struct hashset *hs, const void *data);

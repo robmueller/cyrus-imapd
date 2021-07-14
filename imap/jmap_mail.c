@@ -3694,22 +3694,22 @@ static int emailquery_uidsearch(jmap_req_t *req,
     struct emailquery_uidsearch_result_rock *rrock =
         xzmalloc(sizeof(struct emailquery_uidsearch_result_rock));
 
-    rrock->seen_emails = hashset_new(MESSAGE_GUID_SIZE);
-    if (q->want_partids) {
-        construct_hashu64_table(&rrock->partid_bynum, 1024, 0);
-        construct_hash_table(&rrock->partnum_byid, 1024, 0);
-        rrock->want_partids = 1;
-    }
-
     // move query data from search to rrock
     rrock->query = search->query;
     search->query = NULL;
 
     ptrarray_t *msgdata = &rrock->query->merged_msgdata;
 
+    rrock->seen_emails = hashset_new(MESSAGE_GUID_SIZE, msgdata->count);
+    if (q->want_partids) {
+        construct_hashu64_table(&rrock->partid_bynum, 1024, 0);
+        construct_hash_table(&rrock->partnum_byid, 1024, 0);
+        rrock->want_partids = 1;
+    }
+
     if (search->sort_savedate) {
-        /* Build hashset of messages with savedates */
-        rrock->savedates = hashset_new(MESSAGE_GUID_SIZE);
+        /* Build hashset of messages with savedates, only unsnoozed messages */
+        rrock->savedates = hashset_new(MESSAGE_GUID_SIZE, 8192);
 
         int j;
         for (j = 0; j < msgdata->count; j++) {
@@ -3817,7 +3817,7 @@ static void emailquery_cache_loadn(struct emailquery *q,
             qc->collapsed_matches =
                 xmalloc(sizeof(struct emailquery_match) * qc->qr.total_ceiling);
             qc->collapsed_len = 0;
-            qc->seen_threads = hashset_new(sizeof(conversation_id_t));
+            qc->seen_threads = hashset_new(sizeof(conversation_id_t), qc->qr.total_ceiling);
         }
     }
 
@@ -4891,7 +4891,7 @@ static void _thread_changes(jmap_req_t *req, struct jmap_changes *changes, json_
     modseq_t highest_modseq = 0;
     int i;
 
-    struct hashset *seen_threads = hashset_new(8);
+    struct hashset *seen_threads = hashset_new(8, msgdata->count);
 
     char thread_id[JMAP_THREADID_SIZE];
 
