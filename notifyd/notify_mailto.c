@@ -46,15 +46,15 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 #include <time.h>
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <unistd.h>
 
 #include "imap/global.h"
+#include "imap/smtpclient.h"
 #include "libconfig.h"
 #include "sieve/sieve_interface.h"
 #include "times.h"
+#include "util.h"
 
 static int contains_8bit(const char *msg);
 
@@ -68,75 +68,61 @@ char* notify_mailto(const char *class,
                     const char *message,
                     const char *fname __attribute__((unused)))
 {
-    FILE *sm;
-    const char *smbuf[7];
+    struct buf msgbuf = BUF_INITIALIZER;
+    smtp_envelope_t sm_env = SMTP_ENVELOPE_INITIALIZER;
+    smtpclient_t *sm = NULL;
     char outmsgid[256];
-    int sm_stat;
     time_t t;
     char datestr[RFC5322_DATETIME_MAX+1];
-    pid_t sm_pid;
-    int fds[2];
+    int r;
 
     /* XXX check/parse options (mailto URI) */
     if (nopt < 1)
         return strdup("NO mailto URI not specified");
 
-    smbuf[0] = "sendmail";
-    smbuf[1] = "-i";            /* ignore dots */
-    smbuf[2] = "-f";
-    smbuf[3] = "<>";            /* XXX do we want a return-path? */
-    smbuf[4] = "--";
-    smbuf[5] = options[0];
-    smbuf[6] = NULL;
+    /* Initialize SMTP envelope */
+    smtp_envelope_set_from(&sm_env, "");
+    smtp_envelope_add_rcpt(&sm_env, options[0]);
 
-    if (pipe(fds))
-        return strdup("NO mailto could not open pipe");
-
-    if ((sm_pid = fork()) == 0) {
-        /* i'm the child! run sendmail! */
-        close(fds[1]);
-        /* make the pipe be stdin */
-        dup2(fds[0], STDIN_FILENO);
-        execv(config_getstring(IMAPOPT_SENDMAIL), (char **) smbuf);
-
-        /* if we're here we suck */
-        return strdup("NO mailto couldn't exec");
-    }
-    /* i'm the parent */
-    close(fds[0]);
-    sm = fdopen(fds[1], "w");
-
-    if (!sm)
-        return strdup("NO mailto could not spawn sendmail process");
-
+    /* Build message */
     t = time(NULL);
     snprintf(outmsgid, sizeof(outmsgid), "<cmu-sieve-%d-" TIME_T_FMT "-%d@%s>",
-             (int) sm_pid, t, global_outgoing_count++, config_servername);
+             (int) getpid(), t, global_outgoing_count++, config_servername);
 
-    fprintf(sm, "Message-ID: %s\r\n", outmsgid);
+    buf_printf(&msgbuf, "Message-ID: %s\r\n", outmsgid);
 
     time_to_rfc5322(t, datestr, sizeof(datestr));
-    fprintf(sm, "Date: %s\r\n", datestr);
+    buf_printf(&msgbuf, "Date: %s\r\n", datestr);
 
-    fprintf(sm, "X-Sieve: %s\r\n", SIEVE_VERSION);
-    fprintf(sm, "From: Mail Sieve Subsystem <%s>\r\n", config_getstring(IMAPOPT_POSTMASTER));
-    fprintf(sm, "To: <%s>\r\n", options[0]);
-    fprintf(sm, "Subject: [%s] New mail notification\r\n", class);
+    buf_printf(&msgbuf, "X-Sieve: %s\r\n", SIEVE_VERSION);
+    buf_printf(&msgbuf, "From: Mail Sieve Subsystem <%s>\r\n",
+               config_getstring(IMAPOPT_POSTMASTER));
+    buf_printf(&msgbuf, "To: <%s>\r\n", options[0]);
+    buf_printf(&msgbuf, "Subject: [%s] New mail notification\r\n", class);
     if (contains_8bit(message)) {
-        fprintf(sm, "MIME-Version: 1.0\r\n");
-        fprintf(sm, "Content-Type: text/plain; charset=UTF-8\r\n");
-        fprintf(sm, "Content-Transfer-Encoding: 8BIT\r\n");
+        buf_appendcstr(&msgbuf, "MIME-Version: 1.0\r\n");
+        buf_appendcstr(&msgbuf, "Content-Type: text/plain; charset=UTF-8\r\n");
+        buf_appendcstr(&msgbuf, "Content-Transfer-Encoding: 8BIT\r\n");
     }
-    fprintf(sm, "\r\n");
+    buf_appendcstr(&msgbuf, "\r\n");
+    buf_printf(&msgbuf, "%s\r\n", message);
 
-    fprintf(sm, "%s\r\n", message);
+    /* Send message using smtpclient API */
+    r = smtpclient_open(&sm);
+    if (!r) {
+        r = smtpclient_send(sm, &sm_env, &msgbuf);
+    }
+    smtpclient_close(&sm);
 
-    fclose(sm);
-    while (waitpid(sm_pid, &sm_stat, 0) < 0);
-
-    /* XXX check for sendmail exit code */
+    /* Clean up */
+    smtp_envelope_fini(&sm_env);
+    buf_free(&msgbuf);
 
     /* XXX add outmsgid to duplicate delivery database to prevent loop */
+
+    if (r) {
+        return strdup("NO mailto notification failed");
+    }
 
     return strdup("OK mailto notification successful");
 }
