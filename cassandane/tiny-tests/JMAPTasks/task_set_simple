@@ -1,0 +1,44 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_set_simple
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    xlog $self, "create a task list";
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, 'R0'],
+    ]);
+    my $defaultCalId = $res->[0][1]{list}[0]{id};
+    $self->assert_not_null($defaultCalId);
+
+    xlog $self, "create a task";
+    $res = $jmap->CallMethods([
+        ['Task/set', { create => {
+            "1" => {
+                "\@type" => "Task",
+                title => "Buy groceries",
+                taskListIds => { $defaultCalId => JSON::true },
+                due => "2025-01-15T17:00:00",
+                progress => "needs-action",
+            },
+        }}, "R1"],
+    ]);
+    $self->assert_not_null($res->[0][1]{created}{"1"});
+    my $taskId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($taskId);
+
+    xlog $self, "get the task back";
+    $res = $jmap->CallMethods([
+        ['Task/get', { ids => [$taskId] }, "R2"],
+    ]);
+    my $task = $res->[0][1]{list}[0];
+    $self->assert_str_equals("Task", $task->{'@type'});
+    $self->assert_str_equals("Buy groceries", $task->{title});
+    $self->assert_str_equals("needs-action", $task->{progress});
+    $self->assert_str_equals("2025-01-15T17:00:00", $task->{due});
+    $self->assert_not_null($task->{taskListIds});
+    $self->assert_equals(JSON::true, $task->{taskListIds}{$defaultCalId});
+}

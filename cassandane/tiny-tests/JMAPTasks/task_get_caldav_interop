@@ -1,0 +1,52 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_get_caldav_interop
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $CalDAV = $self->{caldav};
+
+    xlog $self, "PUT a VTODO via CalDAV";
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    my $uuid = "3b678201-e45c-4f4e-a7cf-deaf08b951a0";
+    my $href = "$CalendarId/$uuid.ics";
+    my $card = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250101T120000Z
+DTSTART:20250110T090000Z
+DUE:20250115T170000Z
+SUMMARY:Write tests
+STATUS:IN-PROCESS
+PERCENT-COMPLETE:50
+PRIORITY:2
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href, $card, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "read via Task/get";
+    my $res = $jmap->CallMethods([
+        ['Task/get', {}, "R1"],
+    ]);
+    my @tasks = grep { $_->{'@type'} eq 'Task' } @{$res->[0][1]{list}};
+    $self->assert_num_equals(1, scalar @tasks);
+
+    my $task = $tasks[0];
+    $self->assert_str_equals("Task", $task->{'@type'});
+    $self->assert_str_equals("Write tests", $task->{title});
+    $self->assert_str_equals("in-process", $task->{progress});
+    $self->assert_num_equals(50, $task->{percentComplete});
+    $self->assert_str_equals("2025-01-15T17:00:00", $task->{due});
+    $self->assert_num_equals(2, $task->{priority});
+}

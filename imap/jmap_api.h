@@ -36,6 +36,7 @@
 #define JMAP_URN_CALENDARS  "urn:ietf:params:jmap:calendars"
 #define JMAP_URN_PRINCIPALS "urn:ietf:params:jmap:principals"
 #define JMAP_URN_CALENDAR_PREFERENCES "urn:ietf:params:jmap:calendars:preferences"
+#define JMAP_URN_TASKS      "urn:ietf:params:jmap:tasks"
 
 #define JMAP_CORE_EXTENSION          "https://cyrusimap.org/ns/jmap/core"
 #define JMAP_BLOB_EXTENSION          "https://cyrusimap.org/ns/jmap/blob"
@@ -216,6 +217,7 @@ extern void jmap_backup_init(jmap_settings_t *settings);
 extern void jmap_notes_init(jmap_settings_t *settings);
 extern void jmap_sieve_init(jmap_settings_t *settings);
 extern void jmap_admin_init(jmap_settings_t *settings);
+extern void jmap_task_init(jmap_settings_t *settings);
 
 extern void jmap_core_capabilities(json_t *account_capabilities);
 extern void jmap_blob_capabilities(json_t *account_capabilities);
@@ -238,6 +240,10 @@ extern void jmap_backup_capabilities(json_t *account_capabilities);
 extern void jmap_notes_capabilities(json_t *account_capabilities);
 extern void jmap_sieve_capabilities(json_t *account_capabilities);
 extern void jmap_admin_capabilities(json_t *account_capabilities);
+extern void jmap_task_capabilities(json_t *account_capabilities,
+                                   struct auth_state *authstate,
+                                   const char *authuserid,
+                                   const char *accountid);
 
 extern void jmap_accounts(json_t *accounts, json_t *primary_accounts);
 

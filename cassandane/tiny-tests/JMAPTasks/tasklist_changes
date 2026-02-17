@@ -1,0 +1,37 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_tasklist_changes
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    xlog $self, "get initial state";
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, "R1"],
+    ]);
+    my $state = $res->[0][1]{state};
+    $self->assert_not_null($state);
+
+    xlog $self, "create a task list";
+    $res = $jmap->CallMethods([
+        ['TaskList/set', { create => {
+            "1" => {
+                name => "New task list",
+            },
+        }}, "R2"],
+    ]);
+    my $tasklistId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($tasklistId);
+
+    xlog $self, "get task list changes";
+    $res = $jmap->CallMethods([
+        ['TaskList/changes', { sinceState => $state }, "R3"],
+    ]);
+    $self->assert_str_equals("TaskList/changes", $res->[0][0]);
+    $self->assert_str_equals($state, $res->[0][1]{oldState});
+    $self->assert_str_not_equals($state, $res->[0][1]{newState});
+    $self->assert_num_equals(1, scalar @{$res->[0][1]{created}});
+    $self->assert_str_equals($tasklistId, $res->[0][1]{created}[0]);
+}

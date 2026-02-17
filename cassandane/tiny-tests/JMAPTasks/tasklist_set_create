@@ -1,0 +1,34 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_tasklist_set_create
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    xlog $self, "create a new task list";
+    my $res = $jmap->CallMethods([
+        ['TaskList/set', { create => {
+            "1" => {
+                name => "My Tasks",
+                color => "#FF0000",
+                sortOrder => 5,
+                isVisible => JSON::true,
+            },
+        }}, "R1"],
+    ]);
+    $self->assert_str_equals("TaskList/set", $res->[0][0]);
+    $self->assert_not_null($res->[0][1]{created}{"1"});
+    my $tasklistId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($tasklistId);
+
+    xlog $self, "get the new task list";
+    $res = $jmap->CallMethods([
+        ['TaskList/get', { ids => [$tasklistId] }, "R2"],
+    ]);
+    $self->assert_num_equals(1, scalar @{$res->[0][1]{list}});
+    my $tasklist = $res->[0][1]{list}[0];
+    $self->assert_str_equals($tasklistId, $tasklist->{id});
+    $self->assert_str_equals("My Tasks", $tasklist->{name});
+}

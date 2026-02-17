@@ -1,0 +1,49 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_not_in_calendarevent
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $CalDAV = $self->{caldav};
+
+    xlog $self, "PUT a VTODO via CalDAV";
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+
+    my $uuid = "aabbccdd-1234-5678-9abc-def012345678";
+    my $href = "$CalendarId/$uuid.ics";
+    my $card = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250101T120000Z
+SUMMARY:Hidden from events
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href, $card, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "CalendarEvent/get should NOT return VTODOs";
+    my $res = $jmap->CallMethods([
+        ['CalendarEvent/get', {}, "R1"],
+    ]);
+    my @events = @{$res->[0][1]{list}};
+    foreach my $event (@events) {
+        $self->assert_str_not_equals($uuid, $event->{uid})
+            if $event->{uid};
+    }
+
+    xlog $self, "Task/get SHOULD return VTODOs";
+    $res = $jmap->CallMethods([
+        ['Task/get', {}, "R2"],
+    ]);
+    my @tasks = @{$res->[0][1]{list}};
+    my @matching = grep { ($_->{uid} || '') eq $uuid } @tasks;
+    $self->assert_num_equals(1, scalar @matching);
+    $self->assert_str_equals("Hidden from events", $matching[0]->{title});
+}

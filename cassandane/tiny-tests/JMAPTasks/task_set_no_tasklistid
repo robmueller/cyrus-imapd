@@ -1,0 +1,33 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_set_no_tasklistid
+    :min_version_3_9
+    :needs_component_jmap
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    xlog $self, "create a task without taskListIds";
+    my $res = $jmap->CallMethods([
+        ['Task/set', { create => {
+            "t1" => {
+                "\@type" => "Task",
+                title => "Missing taskListIds",
+                progress => "needs-action",
+            },
+        }}, "R1"],
+    ]);
+
+    xlog $self, "task creation must fail with invalidProperties";
+    $self->assert_null($res->[0][1]{created}{t1});
+    my $err = $res->[0][1]{notCreated}{t1};
+    $self->assert_not_null($err);
+    $self->assert_str_equals("invalidProperties", $err->{type});
+
+    xlog $self, "error must reference taskListIds, not calendarIds";
+    my @props = @{$err->{properties}};
+    $self->assert_deep_equals(['taskListIds'], \@props);
+}
+
+1;

@@ -1,0 +1,64 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_set_progress
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, 'R0'],
+    ]);
+    my $calId = $res->[0][1]{list}[0]{id};
+
+    xlog $self, "create task with needs-action";
+    $res = $jmap->CallMethods([
+        ['Task/set', { create => {
+            "1" => {
+                "\@type" => "Task",
+                title => "Progress test",
+                taskListIds => { $calId => JSON::true },
+                progress => "needs-action",
+            },
+        }}, "R1"],
+    ]);
+    my $taskId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($taskId);
+
+    xlog $self, "update to in-process";
+    $res = $jmap->CallMethods([
+        ['Task/set', { update => {
+            $taskId => {
+                progress => "in-process",
+            },
+        }}, "R2"],
+        ['Task/get', { ids => [$taskId] }, "R3"],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$taskId});
+    $self->assert_str_equals("in-process", $res->[1][1]{list}[0]{progress});
+
+    xlog $self, "update to completed";
+    $res = $jmap->CallMethods([
+        ['Task/set', { update => {
+            $taskId => {
+                progress => "completed",
+            },
+        }}, "R4"],
+        ['Task/get', { ids => [$taskId] }, "R5"],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$taskId});
+    $self->assert_str_equals("completed", $res->[1][1]{list}[0]{progress});
+
+    xlog $self, "update to cancelled";
+    $res = $jmap->CallMethods([
+        ['Task/set', { update => {
+            $taskId => {
+                progress => "cancelled",
+            },
+        }}, "R6"],
+        ['Task/get', { ids => [$taskId] }, "R7"],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$taskId});
+    $self->assert_str_equals("cancelled", $res->[1][1]{list}[0]{progress});
+}

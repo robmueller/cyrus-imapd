@@ -106,16 +106,23 @@ static const char *make_uidrecurid(icalcomponent *comp, struct buf *buf)
     return buf_cstring(buf);
 }
 
-static void icalcomps_init(struct icalcomps *comps, icalcomponent *ical)
+static icalcomponent_kind jmapical_comp_kind(enum jmapical_comp_type comp_type)
 {
-    int ncomps = icalcomponent_count_components(ical, ICAL_VEVENT_COMPONENT);
+    return comp_type == JMAPICAL_COMP_TASK ?
+        ICAL_VTODO_COMPONENT : ICAL_VEVENT_COMPONENT;
+}
+
+static void icalcomps_init_ex(struct icalcomps *comps, icalcomponent *ical,
+                              icalcomponent_kind kind)
+{
+    int ncomps = icalcomponent_count_components(ical, kind);
     construct_hash_table(&comps->by_uidrecurid, ncomps + 1, 0);
     construct_hash_table(&comps->by_uid, ncomps + 1, 0);
 
     icalcomponent *comp;
-    for (comp = icalcomponent_get_first_component(ical, ICAL_VEVENT_COMPONENT);
+    for (comp = icalcomponent_get_first_component(ical, kind);
          comp;
-         comp = icalcomponent_get_next_component(ical, ICAL_VEVENT_COMPONENT)) {
+         comp = icalcomponent_get_next_component(ical, kind)) {
 
         const char *uid = icalcomponent_get_uid(comp);
         if (!uid) continue;
@@ -209,7 +216,8 @@ static json_t *calendarevent_from_ical(icalcomponent *comp,
                                        hash_table *props,
                                        ptrarray_t *overrides,
                                        jstimezones_t *jtzcache,
-                                       struct jmapical_ctx *jmapctx);
+                                       struct jmapical_ctx *jmapctx,
+                                       enum jmapical_comp_type comp_type);
 
 static void calendarevent_to_ical(icalcomponent *comp,
                                   struct jmap_parser *parser,
@@ -218,7 +226,8 @@ static void calendarevent_to_ical(icalcomponent *comp,
                                   struct icalcomps *oldcomps,
                                   icaltimetype now,
                                   jstimezones_t **jtzcachep,
-                                  struct jmapical_ctx *jmapctx);
+                                  struct jmapical_ctx *jmapctx,
+                                  enum jmapical_comp_type comp_type);
 
 static char *_emailalert_recipient(const char *userid)
 {
@@ -2013,7 +2022,8 @@ overrides_from_ical(icalcomponent *comp, ptrarray_t *icaloverrides,
         icalcomponent *excomp = ptrarray_nth(icaloverrides, i);
 
         /* Convert VEVENT exception to JMAP */
-        json_t *ex = calendarevent_from_ical(excomp, comp, NULL, NULL, jstzones, jmapctx);
+        json_t *ex = calendarevent_from_ical(excomp, comp, NULL, NULL, jstzones,
+                                             jmapctx, JMAPICAL_COMP_EVENT);
         if (!ex) continue;
 
         /* Recurrence-id */
@@ -3347,6 +3357,34 @@ static void duration_from_vevent(icalcomponent *comp, struct jmapical_duration *
     jmapical_duration_from_icalduration(icaldur, dur);
 }
 
+static void duration_from_vtodo(icalcomponent *comp, struct jmapical_duration *dur,
+                                jstimezones_t *jstzones)
+{
+    struct icaldurationtype icaldur = icaldurationtype_null_duration();
+    icalproperty *dur_prop =
+        icalcomponent_get_first_property(comp, ICAL_DURATION_PROPERTY);
+    icalproperty *due_prop =
+        icalcomponent_get_first_property(comp, ICAL_DUE_PROPERTY);
+
+    if (dur_prop) {
+        icaldur = icalproperty_get_duration(dur_prop);
+    }
+    else if (due_prop) {
+        icalproperty *dtstart_prop =
+            icalcomponent_get_first_property(comp, ICAL_DTSTART_PROPERTY);
+        if (dtstart_prop) {
+            struct icaltimetype dtstart = dtstart_from_ical(comp, jstzones);
+            icaltimetype due = icalproperty_get_due(due_prop);
+            if (!icaltime_is_null_time(due) && !icaltime_is_null_time(dtstart)) {
+                icaldur = icalduration_from_times(due, dtstart);
+                icaldur = icaldurationtype_normalize(icaldur);
+            }
+        }
+    }
+
+    jmapical_duration_from_icalduration(icaldur, dur);
+}
+
 static json_t*
 locale_from_ical(icalcomponent *comp)
 {
@@ -3729,11 +3767,13 @@ calendarevent_from_ical(icalcomponent *comp,
                         hash_table *props,
                         ptrarray_t *overrides,
                         jstimezones_t *jstzones,
-                        struct jmapical_ctx *jmapctx)
+                        struct jmapical_ctx *jmapctx,
+                        enum jmapical_comp_type comp_type)
 {
     icalproperty* prop = NULL;
     hash_table *wantprops = NULL;
-    json_t *event = json_pack("{s:s}", "@type", "Event");
+    const char *type_str = comp_type == JMAPICAL_COMP_TASK ? "Task" : "Event";
+    json_t *event = json_pack("{s:s}", "@type", type_str);
     struct buf buf = BUF_INITIALIZER;
     jstimezones_t myjstzones = JSTIMEZONES_INITIALIZER;
     int is_override = !!maincomp;
@@ -4167,6 +4207,122 @@ calendarevent_from_ical(icalcomponent *comp,
         jmap_filterprops(event, wantprops);
     }
 
+    /* Task-specific fixups for VTODO components */
+    if (comp_type == JMAPICAL_COMP_TASK) {
+        /* For VTODOs, start is optional - set null if no DTSTART */
+        if (!icalcomponent_get_first_property(comp, ICAL_DTSTART_PROPERTY)) {
+            json_object_set_new(event, "start", json_null());
+            json_object_set_new(event, "timeZone", json_null());
+            json_object_set_new(event, "duration", json_string("PT0S"));
+        }
+
+        /* Remove event-specific properties that don't apply to tasks */
+        json_object_del(event, "freeBusyStatus");
+
+        /* For tasks, duration is calculated from DTSTART..DUE */
+        if (jmap_wantprop(props, "duration")) {
+            jstimezones_t taskjstzones = JSTIMEZONES_INITIALIZER;
+            jstimezones_t *tz = jstzones;
+            if (!tz) {
+                taskjstzones.no_guess =
+                    jmapctx ? jmapctx->from_ical.dont_guess_timezones : 0;
+                icalcomponent *ical = icalcomponent_get_parent(comp);
+                jstimezones_add_vtimezones(&taskjstzones, ical);
+                tz = &taskjstzones;
+            }
+            struct jmapical_duration dur = JMAPICAL_DURATION_INITIALIZER;
+            struct buf taskbuf = BUF_INITIALIZER;
+            duration_from_vtodo(comp, &dur, tz);
+            jmapical_duration_as_string(&dur, &taskbuf);
+            json_object_set_new(event, "duration",
+                    json_string(buf_cstring(&taskbuf)));
+            buf_free(&taskbuf);
+            if (tz == &taskjstzones) jstimezones_fini(&taskjstzones);
+        }
+
+        /* due */
+        if (jmap_wantprop(props, "due")) {
+            icalproperty *due_prop =
+                icalcomponent_get_first_property(comp, ICAL_DUE_PROPERTY);
+            if (due_prop) {
+                struct jmapical_datetime due = JMAPICAL_DATETIME_INITIALIZER;
+                jmapical_datetime_from_icalprop(due_prop, &due);
+                struct buf duebuf = BUF_INITIALIZER;
+                jmapical_localdatetime_as_string(&due, &duebuf);
+                json_object_set_new(event, "due",
+                        json_string(buf_cstring(&duebuf)));
+                buf_free(&duebuf);
+            }
+            else {
+                json_object_set_new(event, "due", json_null());
+            }
+        }
+
+        /* progress - mapped from VTODO STATUS */
+        if (jmap_wantprop(props, "progress")) {
+            const char *progress = NULL;
+            switch (icalcomponent_get_status(comp)) {
+                case ICAL_STATUS_NEEDSACTION:
+                    progress = "needs-action";
+                    break;
+                case ICAL_STATUS_INPROCESS:
+                    progress = "in-process";
+                    break;
+                case ICAL_STATUS_COMPLETED:
+                    progress = "completed";
+                    break;
+                case ICAL_STATUS_CANCELLED:
+                    progress = "cancelled";
+                    break;
+                default:
+                    ;
+            }
+            if (progress)
+                json_object_set_new(event, "progress", json_string(progress));
+            else
+                json_object_set_new(event, "progress", json_null());
+
+            /* For tasks, map status to progress instead */
+            json_object_del(event, "status");
+        }
+
+        /* percentComplete */
+        if (jmap_wantprop(props, "percentComplete")) {
+            icalproperty *pct_prop = icalcomponent_get_first_property(comp,
+                    ICAL_PERCENTCOMPLETE_PROPERTY);
+            if (pct_prop) {
+                json_object_set_new(event, "percentComplete",
+                        json_integer(icalproperty_get_percentcomplete(pct_prop)));
+            }
+        }
+
+        /* estimatedDuration */
+        if (jmap_wantprop(props, "estimatedDuration")) {
+            icalproperty *edur_prop = icalcomponent_get_first_property(comp,
+                    ICAL_ESTIMATEDDURATION_PROPERTY);
+            if (!edur_prop) {
+                /* Fallback to X-ESTIMATED-DURATION */
+                const char *xval = get_icalxprop_value(comp,
+                        "X-ESTIMATED-DURATION");
+                if (xval) {
+                    json_object_set_new(event, "estimatedDuration",
+                            json_string(xval));
+                }
+            }
+            else {
+                struct icaldurationtype icaldur =
+                    icalproperty_get_estimatedduration(edur_prop);
+                struct jmapical_duration dur = JMAPICAL_DURATION_INITIALIZER;
+                jmapical_duration_from_icalduration(icaldur, &dur);
+                struct buf edurbuf = BUF_INITIALIZER;
+                jmapical_duration_as_string(&dur, &edurbuf);
+                json_object_set_new(event, "estimatedDuration",
+                        json_string(buf_cstring(&edurbuf)));
+                buf_free(&edurbuf);
+            }
+        }
+    }
+
     if (jstzones == &myjstzones) jstimezones_fini(&myjstzones);
     free(tzid_start);
     buf_free(&buf);
@@ -4288,33 +4444,37 @@ static void repair_broken_ical(icalcomponent **icalp)
 
 static json_t *jmapical_tojmap_all_icalobj(icalcomponent *ical,
                                            hash_table *props,
-                                           struct jmapical_ctx *jmapctx)
+                                           struct jmapical_ctx *jmapctx,
+                                           enum jmapical_comp_type comp_type)
 {
+    icalcomponent_kind kind = jmapical_comp_kind(comp_type);
     json_t *jsevents = json_array();
     icalcomponent *myical = ical;
     icalcomponent *comp;
     struct buf buf = BUF_INITIALIZER;
     jstimezones_t *jstzones = jstimezones_new(ical, 0);
 
-    if (jmapctx && jmapctx->from_ical.repair_broken_ical) {
+    if (comp_type == JMAPICAL_COMP_EVENT &&
+        jmapctx && jmapctx->from_ical.repair_broken_ical) {
         repair_broken_ical(&myical);
     }
 
     size_t ncomps =
-        icalcomponent_count_components(myical, ICAL_VEVENT_COMPONENT);
+        icalcomponent_count_components(myical, kind);
 
     if (ncomps < 2) {
         // Fast-path: There's at most one component in the VCALENDAR
         if (ncomps) {
-            comp = icalcomponent_get_first_component(myical, ICAL_VEVENT_COMPONENT);
-            json_array_append_new(jsevents, calendarevent_from_ical(comp, NULL,
-                        props, NULL, NULL, jmapctx));
+            comp = icalcomponent_get_first_component(myical, kind);
+            json_array_append_new(jsevents,
+                    calendarevent_from_ical(comp, NULL,
+                        props, NULL, NULL, jmapctx, comp_type));
         }
         goto done;
     }
 
-    /* Group VEVENTs by UID. At most one VEVENT may be the main component,
-     * all other VEVENTs with the same UID must have a recurrence id. */
+    /* Group components by UID. At most one may be the main component,
+     * all others with the same UID must have a recurrence id. */
     hash_table comps_by_uid = HASH_TABLE_INITIALIZER;
     construct_hash_table(&comps_by_uid, ncomps, 0);
 
@@ -4323,9 +4483,9 @@ static json_t *jmapical_tojmap_all_icalobj(icalcomponent *ical,
 
     strarray_t uids = STRARRAY_INITIALIZER;
 
-    for (comp = icalcomponent_get_first_component(myical, ICAL_VEVENT_COMPONENT);
+    for (comp = icalcomponent_get_first_component(myical, kind);
          comp;
-         comp = icalcomponent_get_next_component(myical, ICAL_VEVENT_COMPONENT)) {
+         comp = icalcomponent_get_next_component(myical, kind)) {
 
         const char *uid = icalcomponent_get_uid(comp);
         if (!uid) continue;
@@ -4364,7 +4524,7 @@ static json_t *jmapical_tojmap_all_icalobj(icalcomponent *ical,
         }
     }
 
-    // Convert events by order of appearance in the VCALENDAR.
+    // Convert components by order of appearance in the VCALENDAR.
 
     int i;
     for (i = 0; i < strarray_size(&uids); i++) {
@@ -4376,7 +4536,8 @@ static json_t *jmapical_tojmap_all_icalobj(icalcomponent *ical,
             ptrarray_shift(comps);
             json_array_append_new(jsevents,
                     calendarevent_from_ical(comp, NULL, props,
-                        ptrarray_size(comps) ? comps : NULL, jstzones, jmapctx));
+                        ptrarray_size(comps) ? comps : NULL, jstzones,
+                        jmapctx, comp_type));
         }
         else {
             // No main component, convert each instance one by one
@@ -4385,7 +4546,7 @@ static json_t *jmapical_tojmap_all_icalobj(icalcomponent *ical,
                 comp = ptrarray_nth(comps, j);
                 json_array_append_new(jsevents,
                         calendarevent_from_ical(comp, NULL, props,
-                            NULL, jstzones, jmapctx));
+                            NULL, jstzones, jmapctx, comp_type));
             }
         }
 
@@ -4407,7 +4568,8 @@ done:
 
 EXPORTED json_t*
 jmapical_tojmap_all(icalcomponent *ical, hash_table *props,
-                    struct jmapical_ctx *jmapctx)
+                    struct jmapical_ctx *jmapctx,
+                    enum jmapical_comp_type comp_type)
 {
 
     if (icalcomponent_isa(ical) == ICAL_XROOT_COMPONENT)
@@ -4421,7 +4583,8 @@ jmapical_tojmap_all(icalcomponent *ical, hash_table *props,
              iobj = icalcomponent_get_next_component(ical,
                                                      ICAL_VCALENDAR_COMPONENT))
         {
-            json_t *tmp = jmapical_tojmap_all_icalobj(iobj, props, jmapctx);
+            json_t *tmp = jmapical_tojmap_all_icalobj(iobj, props,
+                                                      jmapctx, comp_type);
             json_array_extend(jsevents, tmp);
             json_decref(tmp);
         }
@@ -4430,14 +4593,15 @@ jmapical_tojmap_all(icalcomponent *ical, hash_table *props,
     }
 
     // Process as a regular single iCalendar object.
-    return jmapical_tojmap_all_icalobj(ical, props, jmapctx);
+    return jmapical_tojmap_all_icalobj(ical, props, jmapctx, comp_type);
 }
 
 EXPORTED json_t*
 jmapical_tojmap(icalcomponent *ical, hash_table *props,
                 struct jmapical_ctx *jmapctx)
 {
-    json_t *jsevents = jmapical_tojmap_all(ical, props, jmapctx);
+    json_t *jsevents = jmapical_tojmap_all(ical, props, jmapctx,
+                                           JMAPICAL_COMP_EVENT);
     json_t *ret = NULL;
     if (json_array_size(jsevents)) {
         ret = json_incref(json_array_get(jsevents, 0));
@@ -7542,7 +7706,8 @@ static void overrides_to_ical(icalcomponent *comp,
     icaltimezone *tzstart = jstimezones_lookup_tzid(jstzones, tzidstart);
 
     /* Convert current master event to JMAP */
-    json_t *master = calendarevent_from_ical(comp, NULL, 0, NULL, jstzones, jmapctx);
+    json_t *master = calendarevent_from_ical(comp, NULL, 0, NULL, jstzones,
+                                            jmapctx, JMAPICAL_COMP_EVENT);
     if (!master) return;
     json_object_del(master, "recurrenceRules");
     json_object_del(master, "recurrenceOverrides");
@@ -7652,7 +7817,7 @@ static void overrides_to_ical(icalcomponent *comp,
                 jmap_parser_invalid(parser, "recurrenceId");
             }
             calendarevent_to_ical(excomp, parser, ex, comp, oldcomps,
-                    now, &jstzones, jmapctx);
+                    now, &jstzones, jmapctx, JMAPICAL_COMP_EVENT);
             jmap_parser_pop(parser);
 
             /* Add the exception */
@@ -7793,17 +7958,90 @@ static void calendarevent_to_ical(icalcomponent *comp,
                                   struct icalcomps *oldcomps,
                                   icaltimetype now,
                                   jstimezones_t **jstzonesp,
-                                  struct jmapical_ctx *jmapctx)
+                                  struct jmapical_ctx *jmapctx,
+                                  enum jmapical_comp_type comp_type)
 {
     jstimezones_t myjstzones = JSTIMEZONES_INITIALIZER;
     jstimezones_t *jstzones = NULL;
     icalcomponent *old_comp = oldcomp_of(comp, oldcomps);
 
+    /* Task-specific: pre-processing before shared conversion */
+    json_t *jdue = NULL;
+    json_t *jpctcomplete = NULL;
+    json_t *jestdur = NULL;
+    json_t *orig_type = NULL;
+    int added_dummy_start = 0;
+
+    if (comp_type == JMAPICAL_COMP_TASK) {
+        /* Handle progress -> STATUS mapping before main conversion */
+        json_t *jprogress = json_object_get(event, "progress");
+        if (json_is_string(jprogress)) {
+            const char *val = json_string_value(jprogress);
+            enum icalproperty_status status = ICAL_STATUS_NONE;
+            if (!strcmp(val, "needs-action")) {
+                status = ICAL_STATUS_NEEDSACTION;
+            }
+            else if (!strcmp(val, "in-process")) {
+                status = ICAL_STATUS_INPROCESS;
+            }
+            else if (!strcmp(val, "completed")) {
+                status = ICAL_STATUS_COMPLETED;
+            }
+            else if (!strcmp(val, "cancelled")) {
+                status = ICAL_STATUS_CANCELLED;
+            }
+            else {
+                jmap_parser_invalid(parser, "progress");
+            }
+            if (status != ICAL_STATUS_NONE) {
+                remove_icalprop(comp, ICAL_STATUS_PROPERTY);
+                icalcomponent_set_status(comp, status);
+
+                /* When completed, set COMPLETED timestamp */
+                if (status == ICAL_STATUS_COMPLETED) {
+                    remove_icalprop(comp, ICAL_COMPLETED_PROPERTY);
+                    icalcomponent_add_property(comp,
+                            icalproperty_new_completed(now));
+                }
+            }
+        }
+        else if (JNOTNULL(jprogress)) {
+            jmap_parser_invalid(parser, "progress");
+        }
+
+        /* Temporarily adjust @type for the shared converter */
+        orig_type = json_incref(json_object_get(event, "@type"));
+        if (orig_type) {
+            if (json_is_string(orig_type) &&
+                !strcmp(json_string_value(orig_type), "Task")) {
+                json_object_set_new(event, "@type", json_string("Event"));
+            }
+        }
+
+        /* Remove task-specific properties before shared conversion */
+        jdue = json_incref(json_object_get(event, "due"));
+        jpctcomplete = json_incref(json_object_get(event, "percentComplete"));
+        jestdur = json_incref(json_object_get(event, "estimatedDuration"));
+        json_object_del(event, "due");
+        json_object_del(event, "percentComplete");
+        json_object_del(event, "estimatedDuration");
+        json_object_del(event, "progress"); /* already handled */
+        json_object_del(event, "freeBusyStatus"); /* not applicable to tasks */
+
+        /* VTODO: start is optional. If missing, set a dummy start for the
+         * shared converter, then remove DTSTART afterward. */
+        if (JNULL(json_object_get(event, "start"))) {
+            json_object_set_new(event, "start",
+                    json_string("1970-01-01T00:00:00"));
+            added_dummy_start = 1;
+        }
+    }
+
     /* Caller must set UID */
     const char *uid = icalcomponent_get_uid(comp);
     if (!uid) {
         jmap_parser_invalid(parser, "uid");
-        return;
+        goto task_cleanup;
     }
 
     int is_exc = icalcomponent_get_first_property(comp, ICAL_RECURRENCEID_PROPERTY) != NULL;
@@ -7819,6 +8057,8 @@ static void calendarevent_to_ical(icalcomponent *comp,
     jprop = json_object_get(event, "@type");
     if (JNOTNULL(jprop) && json_is_string(jprop)) {
         if (strcmp(json_string_value(jprop), "Event")) {
+            /* Task pre-processing normalizes @type to "Event" above,
+             * so this check works for both Event and Task */
             jmap_parser_invalid(parser, "@type");
         }
     } else if (JNOTNULL(jprop)) {
@@ -8266,23 +8506,125 @@ static void calendarevent_to_ical(icalcomponent *comp,
     }
 
     if (jstzones == &myjstzones) jstimezones_fini(&myjstzones);
+
+    /* Task-specific: post-processing after shared conversion */
+task_cleanup:
+    if (comp_type == JMAPICAL_COMP_TASK) {
+        /* Remove dummy DTSTART if we added one */
+        if (added_dummy_start) {
+            remove_icalprop(comp, ICAL_DTSTART_PROPERTY);
+            json_object_del(event, "start");
+        }
+
+        /* Restore @type */
+        if (orig_type) {
+            json_object_set(event, "@type", orig_type);
+        }
+        json_decref(orig_type);
+
+        /* Handle DUE property */
+        if (json_is_string(jdue)) {
+            struct jmapical_datetime dt = JMAPICAL_DATETIME_INITIALIZER;
+            if (jmapical_localdatetime_from_string(json_string_value(jdue),
+                                                   &dt) >= 0) {
+                remove_icalprop(comp, ICAL_DUE_PROPERTY);
+                /* Use the same timezone as DTSTART if available */
+                icalproperty *dtstart_prop =
+                    icalcomponent_get_first_property(comp,
+                            ICAL_DTSTART_PROPERTY);
+                icaltimezone *tz = NULL;
+                if (dtstart_prop) {
+                    const char *tzid =
+                        icalproperty_get_parameter_as_string(
+                                dtstart_prop, "TZID");
+                    if (tzid)
+                        tz = icaltimezone_get_builtin_timezone(tzid);
+                }
+                icaltimetype icaldue =
+                    jmapical_datetime_to_icaltime(&dt, tz);
+                icalproperty *dueprop = icalproperty_new_due(icaldue);
+                if (tz) {
+                    icalproperty_add_parameter(dueprop,
+                            icalparameter_new_tzid(
+                                icaltimezone_get_tzid(tz)));
+                }
+                icalcomponent_add_property(comp, dueprop);
+            }
+            else {
+                jmap_parser_invalid(parser, "due");
+            }
+        }
+        else if (json_is_null(jdue)) {
+            remove_icalprop(comp, ICAL_DUE_PROPERTY);
+        }
+        else if (JNOTNULL(jdue)) {
+            jmap_parser_invalid(parser, "due");
+        }
+        json_decref(jdue);
+
+        /* Handle percentComplete -> PERCENT-COMPLETE */
+        if (json_is_integer(jpctcomplete)) {
+            json_int_t val = json_integer_value(jpctcomplete);
+            if (val >= 0 && val <= 100) {
+                remove_icalprop(comp, ICAL_PERCENTCOMPLETE_PROPERTY);
+                icalcomponent_add_property(comp,
+                        icalproperty_new_percentcomplete((int)val));
+            }
+            else {
+                jmap_parser_invalid(parser, "percentComplete");
+            }
+        }
+        else if (JNOTNULL(jpctcomplete)) {
+            jmap_parser_invalid(parser, "percentComplete");
+        }
+        json_decref(jpctcomplete);
+
+        /* Handle estimatedDuration -> X-ESTIMATED-DURATION */
+        if (json_is_string(jestdur)) {
+            struct jmapical_duration dur = JMAPICAL_DURATION_INITIALIZER;
+            if (jmapical_duration_from_string(json_string_value(jestdur),
+                                              &dur) >= 0) {
+                struct icaldurationtype icaldur =
+                    jmapical_duration_to_icalduration(&dur);
+                remove_icalxprop(comp, "X-ESTIMATED-DURATION");
+                /* Use X-ESTIMATED-DURATION for maximum compatibility */
+                icalproperty *edprop = icalproperty_new(ICAL_X_PROPERTY);
+                icalproperty_set_x_name(edprop, "X-ESTIMATED-DURATION");
+                icalproperty_set_value(edprop,
+                        icalvalue_new_duration(icaldur));
+                icalcomponent_add_property(comp, edprop);
+            }
+            else {
+                jmap_parser_invalid(parser, "estimatedDuration");
+            }
+        }
+        else if (json_is_null(jestdur)) {
+            remove_icalxprop(comp, "X-ESTIMATED-DURATION");
+        }
+        else if (JNOTNULL(jestdur)) {
+            jmap_parser_invalid(parser, "estimatedDuration");
+        }
+        json_decref(jestdur);
+    }
 }
 
-icalcomponent*
+EXPORTED icalcomponent*
 jmapical_toical(json_t *jsevent, icalcomponent *oldical,
                 json_t *invalid,
                 json_t *serverset,
                 icalcomponent **compptr,
                 jstimezones_t **jstzonesp,
-                struct jmapical_ctx *jmapctx)
+                struct jmapical_ctx *jmapctx,
+                enum jmapical_comp_type comp_type)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
     icalcomponent *ical = NULL;
+    icalcomponent_kind kind = jmapical_comp_kind(comp_type);
     struct icalcomps oldcomps = ICALCOMPS_INITIALIZER;
 
     if (oldical) {
-        // Keep track of previous VEVENT versions
-        icalcomps_init(&oldcomps, oldical);
+        // Keep track of previous component versions
+        icalcomps_init_ex(&oldcomps, oldical, kind);
     }
 
     /* uid */
@@ -8293,11 +8635,12 @@ jmapical_toical(json_t *jsevent, icalcomponent *oldical,
         icalcomponent_add_property(ical, icalproperty_new_version("2.0"));
         icalcomponent_add_property(ical, icalproperty_new_calscale("GREGORIAN"));
 
-        /* Create a new VEVENT. */
+        /* Create a new VEVENT or VTODO. */
         icaltimezone *utc = icaltimezone_get_utc_timezone();
         struct icaltimetype now =
             icaltime_from_timet_with_zone(time(NULL), 0, utc);
-        icalcomponent *comp = icalcomponent_new_vevent();
+        icalcomponent *comp = comp_type == JMAPICAL_COMP_TASK ?
+            icalcomponent_new_vtodo() : icalcomponent_new_vevent();
         icalcomponent_set_uid(comp, uid);
         icalcomponent_set_sequence(comp, 0);
         icalcomponent_set_dtstamp(comp, now);
@@ -8305,9 +8648,9 @@ jmapical_toical(json_t *jsevent, icalcomponent *oldical,
         icalcomponent_add_component(ical, comp);
         if (compptr) *compptr = comp;
 
-        /* Convert the JMAP calendar event to ical. */
+        /* Convert the JMAP calendar event/task to ical. */
         calendarevent_to_ical(comp, &parser, jsevent, NULL,
-                &oldcomps, now, jstzonesp, jmapctx);
+                &oldcomps, now, jstzonesp, jmapctx, comp_type);
         icalcomponent_add_required_timezones(ical);
     }
     else jmap_parser_invalid(&parser, "uid");
@@ -8391,7 +8734,8 @@ EXPORTED icalcomponent *jevent_string_as_icalcomponent(const struct buf *buf)
         return NULL;
     }
 
-    ical = jmapical_toical(obj, NULL, NULL, NULL, NULL, NULL, NULL);
+    ical = jmapical_toical(obj, NULL, NULL, NULL, NULL, NULL, NULL,
+                          JMAPICAL_COMP_EVENT);
 
     json_decref(obj);
 

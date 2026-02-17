@@ -524,6 +524,7 @@ static json_t *lookup_capabilities(const char *accountid,
         jmap_mdn_capabilities(capas);
         jmap_contact_capabilities(capas, authstate, authuserid, accountid);
         jmap_calendar_capabilities(capas, authstate, authuserid, accountid);
+        jmap_task_capabilities(capas, authstate, authuserid, accountid);
         jmap_backup_capabilities(capas);
         jmap_notes_capabilities(capas);
 #ifdef USE_SIEVE
@@ -554,6 +555,7 @@ static json_t *lookup_capabilities(const char *accountid,
             }
             if (rock.has_calendars) {
                 jmap_calendar_capabilities(capas, authstate, authuserid, accountid);
+                jmap_task_capabilities(capas, authstate, authuserid, accountid);
             }
             // should we offer Backup/restoreXxx for shared accounts?
         }

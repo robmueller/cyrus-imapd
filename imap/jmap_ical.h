@@ -104,6 +104,12 @@ extern void jmapical_context_free(struct jmapical_ctx**);
 
 extern int jmapical_context_open_attachments(struct jmapical_ctx *jmapctx);
 
+/* Component type for parameterized conversion functions */
+enum jmapical_comp_type {
+    JMAPICAL_COMP_EVENT = 0,
+    JMAPICAL_COMP_TASK  = 1
+};
+
 /* Converts the iCalendar component ical to JSCalendar.
  * Returns NULL on error.
  */
@@ -112,23 +118,27 @@ json_t* jmapical_tojmap(icalcomponent *ical, hash_table *props,
 
 /* Converts the iCalendar component ical to an array of JSCalendar objects.
  * Returns NULL on error.
+ * comp_type selects VEVENT (EVENT) or VTODO (TASK) components.
  */
 json_t *jmapical_tojmap_all(icalcomponent *ical, hash_table *props,
-                            struct jmapical_ctx *jmapctx);
+                            struct jmapical_ctx *jmapctx,
+                            enum jmapical_comp_type comp_type);
 
 /* Convert the jsevent to iCalendar.
  * The oldical argument points to the previous VCALENDAR of the event,
  * or NULL.
  * Returns a new VCALENDAR component, or NULL on error.
  * If compptr is not NULL, then its value points to
- * the newly created VEVENT.
+ * the newly created VEVENT or VTODO.
+ * comp_type selects VEVENT (EVENT) or VTODO (TASK) creation.
  */
 icalcomponent* jmapical_toical(json_t *jsevent, icalcomponent *oldical,
                                json_t *invalid,
                                json_t *serverset,
                                icalcomponent **compptr,
                                jstimezones_t **jstzonesp,
-                               struct jmapical_ctx *jmapctx);
+                               struct jmapical_ctx *jmapctx,
+                               enum jmapical_comp_type comp_type);
 
 
 /* Convert the iCalendar VALARM to a JSCalendar Alert.

@@ -1,0 +1,21 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_tasklist_get
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    xlog $self, "get task lists";
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, "R1"],
+    ]);
+    $self->assert_str_equals("TaskList/get", $res->[0][0]);
+    # Should have at least the default calendar
+    $self->assert(scalar @{$res->[0][1]{list}} >= 1);
+
+    my $tasklist = $res->[0][1]{list}[0];
+    $self->assert_not_null($tasklist->{id});
+    $self->assert_not_null($tasklist->{name});
+}

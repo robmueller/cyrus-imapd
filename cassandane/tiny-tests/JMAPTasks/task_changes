@@ -1,0 +1,76 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_changes
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, 'R0'],
+    ]);
+    my $calId = $res->[0][1]{list}[0]{id};
+
+    xlog $self, "get initial state";
+    $res = $jmap->CallMethods([
+        ['Task/get', {}, "R1"],
+    ]);
+    my $state = $res->[0][1]{state};
+    $self->assert_not_null($state);
+
+    xlog $self, "create a task";
+    $res = $jmap->CallMethods([
+        ['Task/set', { create => {
+            "1" => {
+                "\@type" => "Task",
+                title => "Task for changes",
+                taskListIds => { $calId => JSON::true },
+            },
+        }}, "R2"],
+    ]);
+    my $taskId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($taskId);
+
+    xlog $self, "get task changes";
+    $res = $jmap->CallMethods([
+        ['Task/changes', { sinceState => $state }, "R3"],
+    ]);
+    $self->assert_str_equals($state, $res->[0][1]{oldState});
+    $self->assert_str_not_equals($state, $res->[0][1]{newState});
+    $self->assert_num_equals(1, scalar @{$res->[0][1]{created}});
+    $self->assert_str_equals($taskId, $res->[0][1]{created}[0]);
+    $state = $res->[0][1]{newState};
+
+    xlog $self, "update the task";
+    $res = $jmap->CallMethods([
+        ['Task/set', { update => {
+            $taskId => { title => "Updated task" },
+        }}, "R4"],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$taskId});
+
+    xlog $self, "get task changes again";
+    $res = $jmap->CallMethods([
+        ['Task/changes', { sinceState => $state }, "R5"],
+    ]);
+    $self->assert_num_equals(0, scalar @{$res->[0][1]{created}});
+    $self->assert_num_equals(1, scalar @{$res->[0][1]{updated}});
+    $self->assert_str_equals($taskId, $res->[0][1]{updated}[0]);
+    $state = $res->[0][1]{newState};
+
+    xlog $self, "destroy the task";
+    $res = $jmap->CallMethods([
+        ['Task/set', { destroy => [$taskId] }, "R6"],
+    ]);
+    $self->assert_num_equals(1, scalar @{$res->[0][1]{destroyed}});
+
+    xlog $self, "get task changes after destroy";
+    $res = $jmap->CallMethods([
+        ['Task/changes', { sinceState => $state }, "R7"],
+    ]);
+    $self->assert_num_equals(0, scalar @{$res->[0][1]{created}});
+    $self->assert_num_equals(0, scalar @{$res->[0][1]{updated}});
+    $self->assert_num_equals(1, scalar @{$res->[0][1]{destroyed}});
+    $self->assert_str_equals($taskId, $res->[0][1]{destroyed}[0]);
+}

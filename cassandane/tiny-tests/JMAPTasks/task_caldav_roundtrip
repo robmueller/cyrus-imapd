@@ -1,0 +1,53 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_caldav_roundtrip
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $CalDAV = $self->{caldav};
+
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, 'R0'],
+    ]);
+    my $calId = $res->[0][1]{list}[0]{id};
+
+    xlog $self, "create task via Task/set";
+    $res = $jmap->CallMethods([
+        ['Task/set', { create => {
+            "1" => {
+                "\@type" => "Task",
+                title => "JMAP to CalDAV",
+                taskListIds => { $calId => JSON::true },
+                due => "2025-02-20T14:00:00",
+                progress => "in-process",
+                percentComplete => 30,
+            },
+        }}, "R1"],
+    ]);
+    my $taskId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($taskId);
+    my $uid = $res->[0][1]{created}{"1"}{uid};
+
+    xlog $self, "GET via CalDAV to verify VTODO";
+    my $caldavResponse = $CalDAV->Request('GET',
+        "$calId/$uid.ics");
+    my $icaldata = $caldavResponse->{content};
+    $self->assert_matches(qr/BEGIN:VTODO/, $icaldata);
+    $self->assert_matches(qr/SUMMARY:JMAP to CalDAV/, $icaldata);
+    $self->assert_matches(qr/STATUS:IN-PROCESS/, $icaldata);
+    $self->assert_matches(qr/PERCENT-COMPLETE:30/, $icaldata);
+    $self->assert_matches(qr/DUE[^:]*:20250220T140000/, $icaldata);
+
+    xlog $self, "verify Task/get returns the task correctly";
+    $res = $jmap->CallMethods([
+        ['Task/get', { ids => [$taskId] }, "R2"],
+    ]);
+    my $task = $res->[0][1]{list}[0];
+    $self->assert_str_equals("Task", $task->{'@type'});
+    $self->assert_str_equals("JMAP to CalDAV", $task->{title});
+    $self->assert_str_equals("in-process", $task->{progress});
+    $self->assert_num_equals(30, $task->{percentComplete});
+    $self->assert_str_equals("2025-02-20T14:00:00", $task->{due});
+}

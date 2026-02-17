@@ -1,0 +1,58 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_task_set_percentcomplete
+    :min_version_3_9
+    ($self)
+{
+    my $jmap = $self->{jmap};
+
+    my $res = $jmap->CallMethods([
+        ['TaskList/get', {}, 'R0'],
+    ]);
+    my $calId = $res->[0][1]{list}[0]{id};
+
+    xlog $self, "create task with percentComplete";
+    $res = $jmap->CallMethods([
+        ['Task/set', { create => {
+            "1" => {
+                "\@type" => "Task",
+                title => "Percent test",
+                taskListIds => { $calId => JSON::true },
+                percentComplete => 25,
+            },
+        }}, "R1"],
+    ]);
+    my $taskId = $res->[0][1]{created}{"1"}{id};
+    $self->assert_not_null($taskId);
+
+    xlog $self, "verify percentComplete";
+    $res = $jmap->CallMethods([
+        ['Task/get', { ids => [$taskId] }, "R2"],
+    ]);
+    $self->assert_num_equals(25, $res->[0][1]{list}[0]{percentComplete});
+
+    xlog $self, "update percentComplete to 75";
+    $res = $jmap->CallMethods([
+        ['Task/set', { update => {
+            $taskId => {
+                percentComplete => 75,
+            },
+        }}, "R3"],
+        ['Task/get', { ids => [$taskId] }, "R4"],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$taskId});
+    $self->assert_num_equals(75, $res->[1][1]{list}[0]{percentComplete});
+
+    xlog $self, "update percentComplete to 100";
+    $res = $jmap->CallMethods([
+        ['Task/set', { update => {
+            $taskId => {
+                percentComplete => 100,
+            },
+        }}, "R5"],
+        ['Task/get', { ids => [$taskId] }, "R6"],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$taskId});
+    $self->assert_num_equals(100, $res->[1][1]{list}[0]{percentComplete});
+}

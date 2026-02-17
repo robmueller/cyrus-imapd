@@ -1102,7 +1102,8 @@ EXPORTED int caldav_writeical_jmap(struct caldav_db *caldavdb,
                                    struct caldav_data *cdata,
                                    icalcomponent *ical)
 {
-    if (cdata->comp_type != CAL_COMP_VEVENT) return 0;
+    if (cdata->comp_type != CAL_COMP_VEVENT &&
+        cdata->comp_type != CAL_COMP_VTODO) return 0;
     assert(cdata->dav.rowid);
 
     dynarray_t old_jscals;
