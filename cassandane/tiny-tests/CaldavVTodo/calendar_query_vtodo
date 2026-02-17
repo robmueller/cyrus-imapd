@@ -1,0 +1,103 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_calendar_query_vtodo ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    xlog $self, "PUT a VTODO in time-range";
+    my $uuid1 = "e5a4b9c3-2f67-4d8e-b901-6a7b8c9d0e1f";
+    my $href1 = "$CalendarId/$uuid1.ics";
+    my $card1 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid1
+DTSTAMP:20250101T120000Z
+SUMMARY:In-range task
+DTSTART:20250115T090000Z
+DUE:20250115T170000Z
+STATUS:NEEDS-ACTION
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    xlog $self, "PUT a VTODO out of time-range";
+    my $uuid2 = "f6b5c0d4-3a78-4e9f-c012-7b8c9d0e1f2a";
+    my $href2 = "$CalendarId/$uuid2.ics";
+    my $card2 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid2
+DTSTAMP:20250101T120000Z
+SUMMARY:Out-of-range task
+DTSTART:20250201T090000Z
+DUE:20250201T170000Z
+STATUS:NEEDS-ACTION
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    xlog $self, "PUT a VEVENT in the same time-range";
+    my $uuid3 = "a7c6d1e5-4b89-4f0a-d123-8c9d0e1f2a3b";
+    my $href3 = "$CalendarId/$uuid3.ics";
+    my $card3 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:$uuid3
+DTSTAMP:20250101T120000Z
+SUMMARY:An event
+DTSTART:20250115T090000Z
+DTEND:20250115T100000Z
+SEQUENCE:0
+END:VEVENT
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href1, $card1, 'Content-Type' => 'text/calendar');
+    $CalDAV->Request('PUT', $href2, $card2, 'Content-Type' => 'text/calendar');
+    $CalDAV->Request('PUT', $href3, $card3, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "calendar-query filtering for VTODOs in time-range";
+    my $xml = <<EOF;
+<c:calendar-query xmlns:d="DAV:"
+                  xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <d:getetag />
+    <c:calendar-data />
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VTODO">
+        <c:time-range start="20250110T000000Z" end="20250120T000000Z"/>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>
+EOF
+
+    my $res = $CalDAV->Request('REPORT',
+                               "/dav/calendars/user/cassandane/$CalendarId",
+                               $xml, Depth => 1, 'Content-Type' => 'text/xml');
+    my $responses = $res->{'{DAV:}response'};
+
+    xlog $self, "Only the in-range VTODO should be returned";
+    $self->assert_equals(1, scalar @$responses);
+
+    my $icaldata = $responses->[0]{'{DAV:}propstat'}[0]{'{DAV:}prop'}{'{urn:ietf:params:xml:ns:caldav}calendar-data'}{content};
+    $self->assert_matches(qr/In-range task/, $icaldata);
+    $self->assert_matches(qr/UID:$uuid1/, $icaldata);
+}

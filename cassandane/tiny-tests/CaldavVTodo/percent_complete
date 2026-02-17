@@ -1,0 +1,88 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_percent_complete ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    my $uuid = "63f4a5b6-c7d8-e9f0-a1b2-3c4d5e6f7a8b";
+    my $href = "$CalendarId/$uuid.ics";
+    my $card = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250101T120000Z
+SUMMARY:Progress task
+STATUS:NEEDS-ACTION
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    xlog $self, "PUT a VTODO with no PERCENT-COMPLETE";
+    $CalDAV->Request('PUT', $href, $card, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "GET and verify no PERCENT-COMPLETE";
+    my $response = $CalDAV->Request('GET', $href);
+    my $ical = $response->{content};
+    $self->assert_matches(qr/STATUS:NEEDS-ACTION/, $ical);
+    $self->assert_does_not_match(qr/PERCENT-COMPLETE:/, $ical);
+
+    xlog $self, "PUT update to PERCENT-COMPLETE:50, STATUS:IN-PROCESS";
+    my $half = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250102T120000Z
+SUMMARY:Progress task
+STATUS:IN-PROCESS
+PERCENT-COMPLETE:50
+SEQUENCE:1
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href, $half, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "GET and verify PERCENT-COMPLETE:50";
+    $response = $CalDAV->Request('GET', $href);
+    $ical = $response->{content};
+    $self->assert_matches(qr/PERCENT-COMPLETE:50/, $ical);
+    $self->assert_matches(qr/STATUS:IN-PROCESS/, $ical);
+
+    xlog $self, "PUT update to PERCENT-COMPLETE:100 with STATUS:COMPLETED";
+    my $done = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250103T120000Z
+SUMMARY:Progress task
+STATUS:COMPLETED
+COMPLETED:20250103T120000Z
+PERCENT-COMPLETE:100
+SEQUENCE:2
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href, $done, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "GET and verify completed state";
+    $response = $CalDAV->Request('GET', $href);
+    $ical = $response->{content};
+    $self->assert_matches(qr/PERCENT-COMPLETE:100/, $ical);
+    $self->assert_matches(qr/STATUS:COMPLETED/, $ical);
+    $self->assert_matches(qr/COMPLETED:20250103T120000Z/, $ical);
+}

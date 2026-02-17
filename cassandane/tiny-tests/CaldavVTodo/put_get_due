@@ -1,0 +1,39 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_put_get_due ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    my $uuid = "c5ecd552-7a30-4513-a300-e73064a1a58d";
+    my $href = "$CalendarId/$uuid.ics";
+    my $card = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250101T120000Z
+SUMMARY:Task with due date
+DTSTART:20250110T090000Z
+DUE:20250115T170000Z
+STATUS:NEEDS-ACTION
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    xlog $self, "PUT a VTODO with DTSTART and DUE";
+    $CalDAV->Request('PUT', $href, $card, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "GET the VTODO and verify DUE and DTSTART";
+    my $response = $CalDAV->Request('GET', $href);
+    my $ical = $response->{content};
+    $self->assert_matches(qr/DTSTART:20250110T090000Z/, $ical);
+    $self->assert_matches(qr/DUE:20250115T170000Z/, $ical);
+    $self->assert_matches(qr/SUMMARY:Task with due date/, $ical);
+}

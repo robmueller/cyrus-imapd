@@ -1,0 +1,99 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_calendar_query_todo_by_status ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    xlog $self, "PUT VTODOs with different STATUS values";
+    my $uuid1 = "10a1b2c3-d4e5-f6a7-b8c9-d0e1f2a3b4c5";
+    my $href1 = "$CalendarId/$uuid1.ics";
+    my $card1 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid1
+DTSTAMP:20250101T120000Z
+SUMMARY:Needs action task
+STATUS:NEEDS-ACTION
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    my $uuid2 = "20b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6";
+    my $href2 = "$CalendarId/$uuid2.ics";
+    my $card2 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid2
+DTSTAMP:20250101T120000Z
+SUMMARY:Completed task
+STATUS:COMPLETED
+COMPLETED:20250101T120000Z
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    my $uuid3 = "30c3d4e5-f6a7-b8c9-d0e1-f2a3b4c5d6e7";
+    my $href3 = "$CalendarId/$uuid3.ics";
+    my $card3 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid3
+DTSTAMP:20250101T120000Z
+SUMMARY:In-process task
+STATUS:IN-PROCESS
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href1, $card1, 'Content-Type' => 'text/calendar');
+    $CalDAV->Request('PUT', $href2, $card2, 'Content-Type' => 'text/calendar');
+    $CalDAV->Request('PUT', $href3, $card3, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "calendar-query filtering VTODOs by STATUS=NEEDS-ACTION";
+    my $xml = <<EOF;
+<c:calendar-query xmlns:d="DAV:"
+                  xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <d:getetag />
+    <c:calendar-data />
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VTODO">
+        <c:prop-filter name="STATUS">
+          <c:text-match collation="i;ascii-casemap">NEEDS-ACTION</c:text-match>
+        </c:prop-filter>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>
+EOF
+
+    my $res = $CalDAV->Request('REPORT',
+                               "/dav/calendars/user/cassandane/$CalendarId",
+                               $xml, Depth => 1, 'Content-Type' => 'text/xml');
+    my $responses = $res->{'{DAV:}response'};
+
+    xlog $self, "Only the NEEDS-ACTION VTODO should be returned";
+    $self->assert_equals(1, scalar @$responses);
+
+    my $icaldata = $responses->[0]{'{DAV:}propstat'}[0]{'{DAV:}prop'}{'{urn:ietf:params:xml:ns:caldav}calendar-data'}{content};
+    $self->assert_matches(qr/Needs action task/, $icaldata);
+    $self->assert_matches(qr/UID:$uuid1/, $icaldata);
+}

@@ -1,0 +1,70 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_recurring ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    my $uuid = "74a5b6c7-d8e9-f0a1-b2c3-4d5e6f7a8b9c";
+    my $href = "$CalendarId/$uuid.ics";
+    my $card = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250101T120000Z
+SUMMARY:Weekly review
+DTSTART:20250106T090000Z
+DUE:20250106T100000Z
+STATUS:NEEDS-ACTION
+RRULE:FREQ=WEEKLY
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    xlog $self, "PUT a recurring VTODO with RRULE:FREQ=WEEKLY";
+    $CalDAV->Request('PUT', $href, $card, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "GET and verify RRULE is preserved";
+    my $response = $CalDAV->Request('GET', $href);
+    my $ical = $response->{content};
+    $self->assert_matches(qr/RRULE:FREQ=WEEKLY/, $ical);
+    $self->assert_matches(qr/SUMMARY:Weekly review/, $ical);
+
+    xlog $self, "calendar-query with time-range covering multiple occurrences";
+    my $xml = <<EOF;
+<c:calendar-query xmlns:d="DAV:"
+                  xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <d:getetag />
+    <c:calendar-data>
+      <c:expand start="20250106T000000Z" end="20250127T000000Z"/>
+    </c:calendar-data>
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VTODO">
+        <c:time-range start="20250106T000000Z" end="20250127T000000Z"/>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>
+EOF
+
+    my $res = $CalDAV->Request('REPORT',
+                               "/dav/calendars/user/cassandane/$CalendarId",
+                               $xml, Depth => 1, 'Content-Type' => 'text/xml');
+    my $responses = $res->{'{DAV:}response'};
+
+    xlog $self, "The recurring VTODO should be returned";
+    $self->assert_equals(1, scalar @$responses);
+
+    my $icaldata = $responses->[0]{'{DAV:}propstat'}[0]{'{DAV:}prop'}{'{urn:ietf:params:xml:ns:caldav}calendar-data'}{content};
+    $self->assert_matches(qr/Weekly review/, $icaldata);
+}

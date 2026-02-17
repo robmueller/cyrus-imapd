@@ -1,0 +1,83 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_proppatch ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    my $calpath = "/dav/calendars/user/cassandane/$CalendarId";
+
+    xlog $self, "PUT a VTODO into the calendar";
+    my $uuid = "85a6b7c8-d9e0-f1a2-b3c4-5d6e7f8a9b0c";
+    my $href = "$CalendarId/$uuid.ics";
+    my $card = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid
+DTSTAMP:20250101T120000Z
+SUMMARY:Task in patched calendar
+STATUS:NEEDS-ACTION
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href, $card, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "PROPFIND displayname before PROPPATCH";
+    my $propfindXml = <<EOF;
+<?xml version="1.0" encoding="UTF-8"?>
+<D:propfind xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/">
+  <D:prop>
+    <D:displayname/>
+    <A:calendar-color/>
+  </D:prop>
+</D:propfind>
+EOF
+
+    my $response = $CalDAV->Request('PROPFIND', $calpath,
+                                     $propfindXml, 'Content-Type' => 'text/xml');
+    my $propstat = $response->{'{DAV:}response'}[0]{'{DAV:}propstat'}[0];
+    $self->assert_str_equals('HTTP/1.1 200 OK',
+                             $propstat->{'{DAV:}status'}{content});
+    $self->assert_str_equals('tasks',
+                             $propstat->{'{DAV:}prop'}{'{DAV:}displayname'}{content});
+
+    xlog $self, "PROPPATCH to set displayname and calendar-color";
+    my $proppatchXml = <<EOF;
+<?xml version="1.0" encoding="UTF-8"?>
+<D:propertyupdate xmlns:D="DAV:" xmlns:A="http://apple.com/ns/ical/">
+  <D:set>
+    <D:prop>
+      <D:displayname>My Tasks</D:displayname>
+      <A:calendar-color>#FF6600</A:calendar-color>
+    </D:prop>
+  </D:set>
+</D:propertyupdate>
+EOF
+
+    $CalDAV->Request('PROPPATCH', $calpath,
+                     $proppatchXml, 'Content-Type' => 'text/xml');
+
+    xlog $self, "PROPFIND to verify PROPPATCH took effect";
+    $response = $CalDAV->Request('PROPFIND', $calpath,
+                                 $propfindXml, 'Content-Type' => 'text/xml');
+    $propstat = $response->{'{DAV:}response'}[0]{'{DAV:}propstat'}[0];
+    $self->assert_str_equals('HTTP/1.1 200 OK',
+                             $propstat->{'{DAV:}status'}{content});
+    $self->assert_str_equals('My Tasks',
+                             $propstat->{'{DAV:}prop'}{'{DAV:}displayname'}{content});
+    $self->assert_str_equals('#FF6600',
+                             $propstat->{'{DAV:}prop'}{'{http://apple.com/ns/ical/}calendar-color'}{content});
+
+    xlog $self, "Verify the VTODO is still accessible after PROPPATCH";
+    my $getres = $CalDAV->Request('GET', $href);
+    $self->assert_matches(qr/Task in patched calendar/, $getres->{content});
+    $self->assert_matches(qr/UID:$uuid/, $getres->{content});
+}

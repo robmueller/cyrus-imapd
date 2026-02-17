@@ -1,0 +1,80 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_multiget ($self)
+{
+    my $CalDAV = $self->{caldav};
+
+    my $CalendarId = $CalDAV->NewCalendar({name => 'tasks'});
+    $self->assert_not_null($CalendarId);
+
+    xlog $self, "PUT two VTODOs";
+    my $uuid1 = "41d2e3f4-a5b6-c7d8-e9f0-1a2b3c4d5e6f";
+    my $href1 = "$CalendarId/$uuid1.ics";
+    my $card1 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid1
+DTSTAMP:20250101T120000Z
+SUMMARY:First task
+STATUS:NEEDS-ACTION
+DUE:20250115T170000Z
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    my $uuid2 = "52e3f4a5-b6c7-d8e9-f0a1-2b3c4d5e6f7a";
+    my $href2 = "$CalendarId/$uuid2.ics";
+    my $card2 = <<EOF;
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//Test//EN
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:$uuid2
+DTSTAMP:20250101T120000Z
+SUMMARY:Second task
+STATUS:IN-PROCESS
+DUE:20250120T170000Z
+SEQUENCE:0
+END:VTODO
+END:VCALENDAR
+EOF
+
+    $CalDAV->Request('PUT', $href1, $card1, 'Content-Type' => 'text/calendar');
+    $CalDAV->Request('PUT', $href2, $card2, 'Content-Type' => 'text/calendar');
+
+    xlog $self, "calendar-multiget REPORT for both VTODOs";
+    my $xml = <<EOF;
+<?xml version="1.0" encoding="utf-8" ?>
+<C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <C:calendar-data/>
+  </D:prop>
+  <D:href>/dav/calendars/user/cassandane/$href1</D:href>
+  <D:href>/dav/calendars/user/cassandane/$href2</D:href>
+</C:calendar-multiget>
+EOF
+
+    my $res = $CalDAV->Request('REPORT',
+                               "/dav/calendars/user/cassandane/$CalendarId",
+                               $xml, 'Content-Type' => 'application/xml');
+    my $responses = $res->{'{DAV:}response'};
+
+    xlog $self, "Both VTODOs should be returned";
+    $self->assert_equals(2, scalar @$responses);
+
+    my $ical1 = $responses->[0]{'{DAV:}propstat'}[0]{'{DAV:}prop'}{'{urn:ietf:params:xml:ns:caldav}calendar-data'}{content};
+    my $ical2 = $responses->[1]{'{DAV:}propstat'}[0]{'{DAV:}prop'}{'{urn:ietf:params:xml:ns:caldav}calendar-data'}{content};
+
+    # The order of responses may vary, so check both
+    my $combined = $ical1 . $ical2;
+    $self->assert_matches(qr/First task/, $combined);
+    $self->assert_matches(qr/Second task/, $combined);
+    $self->assert_matches(qr/UID:$uuid1/, $combined);
+    $self->assert_matches(qr/UID:$uuid2/, $combined);
+}
